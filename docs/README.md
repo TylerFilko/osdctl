@@ -107,16 +107,20 @@
   - `force-upgrade` - Schedule forced control plane upgrade for HCP clusters (Requires ForceUpgrader permissions)
   - `get-cp-autoscaling-status` - Get control plane autoscaling status for hosted clusters on a management cluster
   - `must-gather --cluster-id <cluster-identifier>` - Create a must-gather for an HCP cluster (and optionally its management/service clusters)
+  - `recover --cluster-id <hcp-id> --management-cluster <mc-name> --reason <reason>` - Recover ExternalDNS and AWSEndpointService reconciliation after disaster recovery
+    - `validate --cluster-id <hcp-id> --management-cluster <mc-name> --reason <reason>` - Validate DNS and networking health after HCP disaster recovery
   - `restore` - Prepare and restore HCP clusters during disaster recovery
     - `create --cluster-id <cluster-id> --backup-name <backup-name> --reason <reason> [--target-mc <management-cluster>] [--timeout <duration>]` - Create and monitor a Velero restore for an HCP backup
     - `manifestwork` - Compare and relocate HCP ManifestWorks
-      - `compare --cluster-id <cluster-id> --replacement-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>]` - Compare HCP ManifestWorks between management clusters
+      - `compare --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>]` - Compare HCP ManifestWorks between management clusters
       - `move` - Move HCP Velero and cluster resources in phases
-        - `cluster-resources --cluster-id <cluster-id> --replacement-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>]` - Move the namespace, HostedCluster, and NodePool ManifestWorks
-        - `velero-resources --cluster-id <cluster-id> --replacement-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>]` - Move the Velero resource ManifestWorks
-    - `reassign --cluster-id <cluster-id> --replacement-mc <management-cluster>` - Reassign an HCP to a replacement management cluster in OCM
+        - `cluster-resources --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>]` - Move the namespace, HostedCluster, and NodePool ManifestWorks
+        - `velero-resources --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>]` - Move the Velero resource ManifestWorks
+    - `migrate-storage --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason>` - Migrate HCP snapshot storage to a replacement management cluster
+    - `reassign --cluster-id <cluster-id> --target-mc <management-cluster>` - Reassign an HCP to a replacement management cluster in OCM
+    - `reimport --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [--timeout <duration>]` - Move recovered HCP add-on work to a replacement management cluster
     - `release-dns --cluster-id <cluster-id>` - Release central DNS records for an HCP cluster
-    - `update-trust-policy --cluster-id <cluster-id> --replacement-mc <management-cluster>` - Allow a replacement management cluster to access HCP backups
+    - `update-trust-policy --cluster-id <cluster-id> --target-mc <management-cluster>` - Allow a target management cluster to access HCP backups
   - `status` - Show HCP cluster health status from OCM live resources
   - `transition-to-eus` - Transition ROSA HCP clusters from stable to EUS channel (Even Y-Stream EOL handling)
 - `hive` - hive related utilities
@@ -785,6 +789,7 @@ osdctl account mgmt assign [flags]
 
 ```
   -i, --account-id string                (optional) Specific AWS account ID to assign
+      --account-name string              (optional) Name for a newly created account; recommended pattern: <scope>-<environment>-<purpose>[-<region>][-<sequence>]
       --as string                        Username to impersonate for the operation. User could be a regular user or a service account in a namespace.
       --cluster string                   The name of the kubeconfig cluster to use
       --context string                   The name of the kubeconfig context to use
@@ -793,7 +798,7 @@ osdctl account mgmt assign [flags]
       --insecure-skip-tls-verify         If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure
       --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
   -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
-  -p, --payer-account string             Payer account type
+  -p, --payer-account string             Payer account type (default "osd-staging-1")
       --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
   -s, --server string                    The address and port of the Kubernetes API server
       --show-managed-fields              If true, keep the managedFields when printing objects in JSON or YAML format.
@@ -3386,6 +3391,89 @@ osdctl hcp must-gather --cluster-id <cluster-identifier> [flags]
   -S, --skip-version-check               skip checking to see if this is the most recent release
 ```
 
+### osdctl hcp recover
+
+Recover ExternalDNS and AWSEndpointService reconciliation after HCP management cluster disaster recovery.
+
+When a hosted cluster is restored on a replacement management cluster, the AWSEndpointService
+controller may fail to reconcile the existing load balancer endpoint. This command
+automates recovery by:
+
+  1. Verifying DNS cleanup (old Route 53 TXT ownership records removed)
+  2. Confirming cluster resource state (private-router AWSEndpointService)
+  3. Deleting private-router to force controller rediscovery
+  4. Polling for resource recreation with automatic reconciliation
+  5. Outputting new/updated resources after reconciliation
+
+The command supports --dry-run to preview changes without making modifications, and
+--skip-dns-verification to resume after DNS cleanup has been verified separately.
+
+```
+osdctl hcp recover --cluster-id <hcp-id> --management-cluster <mc-name> --reason <reason> [flags]
+```
+
+#### Flags
+
+```
+      --as string                        Username to impersonate for the operation. User could be a regular user or a service account in a namespace.
+      --cluster string                   The name of the kubeconfig cluster to use
+  -C, --cluster-id string                Internal ID, name, or external ID of the HCP cluster
+      --context string                   The name of the kubeconfig context to use
+      --debug                            Enable debug logging output
+      --dry-run                          Preview changes without deleting resources
+  -h, --help                             help for recover
+      --insecure-skip-tls-verify         If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure
+      --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
+  -M, --management-cluster string        Name of the replacement management cluster (required)
+  -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
+      --reason string                    Reason for elevated access to management cluster
+      --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
+      --restart-network-components       Restart kube-apiserver, konnectivity, CPO, HCCO, OVN, and router after recovery
+  -s, --server string                    The address and port of the Kubernetes API server
+      --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
+      --skip-dns-verification            Skip Route 53 TXT ownership record verification (use if DNS cleanup already verified)
+  -S, --skip-version-check               skip checking to see if this is the most recent release
+```
+
+### osdctl hcp recover validate
+
+Validate DNS and networking health after HCP management cluster disaster recovery.
+
+After running recover to restore DNS reconciliation, this command performs
+comprehensive health validation:
+
+  1. Verify Route 53 records are properly reconciled (A/CNAME for api/oauth endpoints)
+  2. Validate networking resources (AWSEndpointService, private-router Service)
+  3. Check control plane components (kube-apiserver, etcd, networking controllers)
+  4. Verify HCP cluster is reachable via OCM and backplane
+
+Use this command to confirm that DNS recovery completed successfully and the cluster
+is fully accessible.
+
+```
+osdctl hcp recover validate --cluster-id <hcp-id> --management-cluster <mc-name> --reason <reason> [flags]
+```
+
+#### Flags
+
+```
+      --as string                        Username to impersonate for the operation. User could be a regular user or a service account in a namespace.
+      --cluster string                   The name of the kubeconfig cluster to use
+  -C, --cluster-id string                Internal ID, name, or external ID of the HCP cluster
+      --context string                   The name of the kubeconfig context to use
+      --debug                            Enable debug logging output
+  -h, --help                             help for validate
+      --insecure-skip-tls-verify         If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure
+      --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
+  -M, --management-cluster string        Name of the management cluster
+  -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
+  -R, --reason string                    Reason for elevated access to management cluster
+      --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
+  -s, --server string                    The address and port of the Kubernetes API server
+      --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
+  -S, --skip-version-check               skip checking to see if this is the most recent release
+```
+
 ### osdctl hcp restore
 
 Prepare and restore HCP clusters during disaster recovery
@@ -3468,7 +3556,7 @@ osdctl hcp restore manifestwork [flags]
 Compare HCP ManifestWorks between management clusters
 
 ```
-osdctl hcp restore manifestwork compare --cluster-id <cluster-id> --replacement-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>] [flags]
+osdctl hcp restore manifestwork compare --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>] [flags]
 ```
 
 #### Flags
@@ -3483,12 +3571,12 @@ osdctl hcp restore manifestwork compare --cluster-id <cluster-id> --replacement-
       --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
   -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
       --reason string                    Reason for elevated access
-      --replacement-mc string            Management cluster whose namespace contains the replacement ManifestWorks
       --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
   -s, --server string                    The address and port of the Kubernetes API server
       --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
   -S, --skip-version-check               skip checking to see if this is the most recent release
       --source-mc string                 Management cluster whose namespace contains the ManifestWorks (defaults to the HCP management cluster)
+      --target-mc string                 Internal ID, name, or external ID of the target management cluster
 ```
 
 ### osdctl hcp restore manifestwork move
@@ -3520,7 +3608,7 @@ osdctl hcp restore manifestwork move [flags]
 Move the namespace, HostedCluster, and NodePool ManifestWorks
 
 ```
-osdctl hcp restore manifestwork move cluster-resources --cluster-id <cluster-id> --replacement-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>] [flags]
+osdctl hcp restore manifestwork move cluster-resources --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>] [flags]
 ```
 
 #### Flags
@@ -3535,12 +3623,12 @@ osdctl hcp restore manifestwork move cluster-resources --cluster-id <cluster-id>
       --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
   -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
       --reason string                    Reason for elevated access
-      --replacement-mc string            Management cluster whose namespace contains the replacement ManifestWorks
       --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
   -s, --server string                    The address and port of the Kubernetes API server
       --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
   -S, --skip-version-check               skip checking to see if this is the most recent release
       --source-mc string                 Management cluster whose namespace contains the ManifestWorks (defaults to the HCP management cluster)
+      --target-mc string                 Internal ID, name, or external ID of the target management cluster
 ```
 
 ### osdctl hcp restore manifestwork move velero-resources
@@ -3548,7 +3636,7 @@ osdctl hcp restore manifestwork move cluster-resources --cluster-id <cluster-id>
 Move the Velero resource ManifestWorks
 
 ```
-osdctl hcp restore manifestwork move velero-resources --cluster-id <cluster-id> --replacement-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>] [flags]
+osdctl hcp restore manifestwork move velero-resources --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [--source-mc <management-cluster>] [flags]
 ```
 
 #### Flags
@@ -3563,12 +3651,44 @@ osdctl hcp restore manifestwork move velero-resources --cluster-id <cluster-id> 
       --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
   -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
       --reason string                    Reason for elevated access
-      --replacement-mc string            Management cluster whose namespace contains the replacement ManifestWorks
       --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
   -s, --server string                    The address and port of the Kubernetes API server
       --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
   -S, --skip-version-check               skip checking to see if this is the most recent release
       --source-mc string                 Management cluster whose namespace contains the ManifestWorks (defaults to the HCP management cluster)
+      --target-mc string                 Internal ID, name, or external ID of the target management cluster
+```
+
+### osdctl hcp restore migrate-storage
+
+Discovers EBS VolumeSnapshotContents for the HCP on the replacement management cluster, stores the relevant inventory and snapshot mappings in a restartable journal, copies snapshots through a temporary source-account KMS key, replaces the target VSCs with the copied snapshot IDs, and resumes the control plane only after all replacement VSCs are ready to use.
+
+```
+osdctl hcp restore migrate-storage --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [flags]
+```
+
+#### Flags
+
+```
+      --as string                        Username to impersonate for the operation. User could be a regular user or a service account in a namespace.
+      --cluster string                   The name of the kubeconfig cluster to use
+  -C, --cluster-id string                Internal ID, name, or external ID of the HCP cluster
+      --concurrency int                  Maximum number of snapshot copy chains to run concurrently (default 4)
+      --context string                   The name of the kubeconfig context to use
+  -h, --help                             help for migrate-storage
+      --insecure-skip-tls-verify         If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure
+      --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
+  -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
+  -p, --profile string                   AWS profile used to assume management-cluster account roles
+      --reason string                    Reason for elevated access to the replacement management cluster
+      --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
+  -s, --server string                    The address and port of the Kubernetes API server
+      --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
+  -S, --skip-version-check               skip checking to see if this is the most recent release
+      --snapshot-journal string          Path for the restartable snapshot journal (defaults to a cluster-specific file; existing journals prompt to resume or create a numbered file)
+      --source-mc string                 Internal ID, name, or external ID of the source management cluster (defaults to the HCP's current management cluster)
+      --target-mc string                 Internal ID, name, or external ID of the target management cluster
+      --timeout duration                 Maximum time to wait for all snapshot copies (default 2h0m0s)
 ```
 
 ### osdctl hcp restore reassign
@@ -3576,7 +3696,7 @@ osdctl hcp restore manifestwork move velero-resources --cluster-id <cluster-id> 
 Reassign an HCP to a replacement management cluster in OCM
 
 ```
-osdctl hcp restore reassign --cluster-id <cluster-id> --replacement-mc <management-cluster> [flags]
+osdctl hcp restore reassign --cluster-id <cluster-id> --target-mc <management-cluster> [flags]
 ```
 
 #### Flags
@@ -3590,11 +3710,39 @@ osdctl hcp restore reassign --cluster-id <cluster-id> --replacement-mc <manageme
       --insecure-skip-tls-verify         If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure
       --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
   -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
-      --replacement-mc string            Internal ID, name, or external ID of the replacement management cluster
       --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
   -s, --server string                    The address and port of the Kubernetes API server
       --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
   -S, --skip-version-check               skip checking to see if this is the most recent release
+      --target-mc string                 Internal ID, name, or external ID of the target management cluster
+```
+
+### osdctl hcp restore reimport
+
+Updates the recovered HCP ManagedCluster and add-on hosting annotations, then deletes old-host add-on ManifestWorks with the Orphan policy. ManagedClusterAddOns are retained.
+
+```
+osdctl hcp restore reimport --cluster-id <cluster-id> --target-mc <management-cluster> --reason <reason> [--timeout <duration>] [flags]
+```
+
+#### Flags
+
+```
+      --as string                        Username to impersonate for the operation. User could be a regular user or a service account in a namespace.
+      --cluster string                   The name of the kubeconfig cluster to use
+  -C, --cluster-id string                Internal ID, name, or external ID of the HCP cluster
+      --context string                   The name of the kubeconfig context to use
+  -h, --help                             help for reimport
+      --insecure-skip-tls-verify         If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure
+      --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
+  -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
+      --reason string                    Reason for elevated access
+      --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
+  -s, --server string                    The address and port of the Kubernetes API server
+      --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
+  -S, --skip-version-check               skip checking to see if this is the most recent release
+      --target-mc string                 Internal ID, name, or external ID of the target management cluster
+      --timeout duration                 Maximum time to wait for deletion (default 5m0s)
 ```
 
 ### osdctl hcp restore release-dns
@@ -3625,10 +3773,10 @@ osdctl hcp restore release-dns --cluster-id <cluster-id> [flags]
 
 ### osdctl hcp restore update-trust-policy
 
-Allow a replacement management cluster to access HCP backups
+Allow a target management cluster to access HCP backups
 
 ```
-osdctl hcp restore update-trust-policy --cluster-id <cluster-id> --replacement-mc <management-cluster> [flags]
+osdctl hcp restore update-trust-policy --cluster-id <cluster-id> --target-mc <management-cluster> [flags]
 ```
 
 #### Flags
@@ -3643,12 +3791,12 @@ osdctl hcp restore update-trust-policy --cluster-id <cluster-id> --replacement-m
       --kubeconfig string                Path to the kubeconfig file to use for CLI requests.
   -o, --output string                    Valid formats are ['', 'json', 'yaml', 'env']
   -p, --profile string                   AWS profile used to assume the DR account role
-      --replacement-mc string            Internal ID, name, or external ID of the replacement management cluster
       --request-timeout string           The length of time to wait before giving up on a single server request. Non-zero values should contain a corresponding time unit (e.g. 1s, 2m, 3h). A value of zero means don't timeout requests. (default "0")
   -s, --server string                    The address and port of the Kubernetes API server
       --skip-aws-proxy-check aws_proxy   Don't use the configured aws_proxy value
   -S, --skip-version-check               skip checking to see if this is the most recent release
       --source-mc string                 Internal ID, name, or external ID of the management cluster currently trusted by the backup role
+      --target-mc string                 Internal ID, name, or external ID of the target management cluster
 ```
 
 ### osdctl hcp status

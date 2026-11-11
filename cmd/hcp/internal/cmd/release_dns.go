@@ -43,6 +43,7 @@ type DNSReleasePlan struct {
 	ZoneName  string
 	ZoneID    string
 	Records   []route53types.ResourceRecordSet
+	DnsConfig dnsConfig
 
 	client awsprovider.Client
 }
@@ -53,15 +54,39 @@ type DefaultDNSReleaser struct {
 	awsClient internalclient.AWSAccountClientProvider
 }
 
+type DefaultDNSReleaserConfig struct {
+	AWSClient internalclient.AWSAccountClientProvider
+}
+
+func (c *DefaultDNSReleaserConfig) Options(opts ...DefaultDNSReleaserOption) {
+	for _, opt := range opts {
+		opt.ConfigureDefaultDNSReleaser(c)
+	}
+}
+
+func (c *DefaultDNSReleaserConfig) Defaults() {
+	if c.AWSClient == nil {
+		c.AWSClient = internalclient.NewAWSAccountClientProvider()
+	}
+}
+
+type DefaultDNSReleaserOption interface {
+	ConfigureDefaultDNSReleaser(*DefaultDNSReleaserConfig)
+}
+
 type dnsOCMClient interface {
 	internalclient.ClusterResolver
 	Environment() string
 }
 
-func NewDefaultDNSReleaser(ocmClient dnsOCMClient) *DefaultDNSReleaser {
+func NewDefaultDNSReleaser(ocmClient dnsOCMClient, opts ...DefaultDNSReleaserOption) *DefaultDNSReleaser {
+	var cfg DefaultDNSReleaserConfig
+	cfg.Options(opts...)
+	cfg.Defaults()
+
 	return &DefaultDNSReleaser{
 		ocmClient: ocmClient,
-		awsClient: internalclient.NewAWSAccountClientProvider(),
+		awsClient: cfg.AWSClient,
 	}
 }
 
@@ -93,7 +118,7 @@ func (r *DefaultDNSReleaser) PrepareDNSRelease(ctx context.Context, request Rele
 	if err != nil {
 		return DNSReleasePlan{}, err
 	}
-	return DNSReleasePlan{ClusterID: cluster.HCPClusterID, AccountID: config.accountID, ZoneName: config.zoneName, ZoneID: awssdk.ToString(zone.Id), Records: records, client: dnsClient}, nil
+	return DNSReleasePlan{ClusterID: cluster.HCPClusterID, AccountID: config.accountID, ZoneName: config.zoneName, ZoneID: awssdk.ToString(zone.Id), Records: records, DnsConfig: config, client: dnsClient}, nil
 }
 
 func (r *DefaultDNSReleaser) ReleaseDNS(ctx context.Context, plan DNSReleasePlan) error {
